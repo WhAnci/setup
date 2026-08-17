@@ -3,16 +3,18 @@ $ErrorActionPreference = "Stop"
 # ------------------------------------------------------------
 # Require Administrator
 # ------------------------------------------------------------
-$isAdmin = (
-    [Security.Principal.WindowsPrincipal]
-    [Security.Principal.WindowsIdentity]::GetCurrent()
-).IsInRole(
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
+
+$isAdmin = $principal.IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
 )
 
 if (-not $isAdmin) {
     throw "Please run PowerShell as Administrator."
 }
+
+Write-Host "Administrator privileges confirmed."
 
 
 # ------------------------------------------------------------
