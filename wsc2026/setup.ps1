@@ -1,10 +1,92 @@
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+# ============================================================
+# Competition Environment Setup
+#
+# Installs:
+#   - Chocolatey
+#   - Git
+#   - kubectl
+#   - k9s
+#   - k6
+#   - Terraform
+#   - AWS CLI v2
+#
+# Run as Administrator:
+#   irm https://setup.swanno3o.com/wsc2026/setup.ps1 | iex
+# ============================================================
+
 
 # ------------------------------------------------------------
-# Require Administrator
+# Helpers
 # ------------------------------------------------------------
+
+function Write-Step {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    Write-Host ""
+    Write-Host "============================================================"
+    Write-Host $Message
+    Write-Host "============================================================"
+}
+
+
+function Refresh-Path {
+    $machinePath = [Environment]::GetEnvironmentVariable(
+        "Path",
+        [EnvironmentVariableTarget]::Machine
+    )
+
+    $userPath = [Environment]::GetEnvironmentVariable(
+        "Path",
+        [EnvironmentVariableTarget]::User
+    )
+
+    $paths = @()
+
+    if ($machinePath) {
+        $paths += $machinePath
+    }
+
+    if ($userPath) {
+        $paths += $userPath
+    }
+
+    $env:Path = $paths -join ";"
+}
+
+
+function Test-Command {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+
+# ------------------------------------------------------------
+# Windows check
+# ------------------------------------------------------------
+
+if ($env:OS -ne "Windows_NT") {
+    throw "This setup script only supports Windows."
+}
+
+
+# ------------------------------------------------------------
+# Administrator check
+# ------------------------------------------------------------
+
 $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
+
+$principal = New-Object `
+    Security.Principal.WindowsPrincipal($currentUser)
 
 $isAdmin = $principal.IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
@@ -18,53 +100,332 @@ Write-Host "Administrator privileges confirmed."
 
 
 # ------------------------------------------------------------
-# Chocolatey
+# TLS 1.2
 # ------------------------------------------------------------
-if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing Chocolatey..."
 
-    Set-ExecutionPolicy Bypass -Scope Process -Force
-
+try {
     [System.Net.ServicePointManager]::SecurityProtocol = `
         [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+}
+catch {
+    Write-Warning "Could not explicitly enable TLS 1.2."
+}
 
-    iex (
-        (New-Object System.Net.WebClient).DownloadString(
-            "https://community.chocolatey.org/install.ps1"
+
+# ------------------------------------------------------------
+# Chocolatey fallback installer
+# ------------------------------------------------------------
+
+function Install-ChocolateyWithDotNetZip {
+
+    Write-Step "Installing Chocolatey (.NET ZIP fallback)"
+
+    $workDir = Join-Path `
+        $env:TEMP `
+        ("choco-bootstrap-" + [Guid]::NewGuid().ToString("N"))
+
+    $extractDir = Join-Path $workDir "package"
+    $packageFile = Join-Path $workDir "chocolatey.nupkg"
+
+    New-Item `
+        -ItemType Directory `
+        -Path $workDir `
+        -Force | Out-Null
+
+    New-Item `
+        -ItemType Directory `
+        -Path $extractDir `
+        -Force | Out-Null
+
+    try {
+
+        Write-Host "Downloading latest Chocolatey package..."
+
+        $queryUrl = "https://community.chocolatey.org/api/v2/Packages()?`$filter=((Id%20eq%20'chocolatey')%20and%20(not%20IsPrerelease))%20and%20IsLatestVersion"
+
+        $webClient = New-Object System.Net.WebClient
+        $webClient.Credentials = `
+            [System.Net.CredentialCache]::DefaultCredentials
+
+        [xml]$result = $webClient.DownloadString($queryUrl)
+
+        $packageUrl = $null
+
+        foreach ($entry in $result.feed.entry) {
+            if ($entry.content.src) {
+                $packageUrl = [string]$entry.content.src
+                break
+            }
+        }
+
+        if (-not $packageUrl) {
+            throw "Could not determine Chocolatey package URL."
+        }
+
+        Write-Host "Downloading:"
+        Write-Host $packageUrl
+
+        $webClient.DownloadFile(
+            $packageUrl,
+            $packageFile
         )
-    )
 
-    # Refresh PATH
-    $env:Path = (
-        [Environment]::GetEnvironmentVariable("Path", "Machine"),
-        [Environment]::GetEnvironmentVariable("Path", "User")
-    ) -join ";"
+        if (-not (Test-Path $packageFile)) {
+            throw "Chocolatey package download failed."
+        }
+
+        Write-Host "Extracting Chocolatey using .NET ZIP API..."
+
+        Add-Type `
+            -AssemblyName System.IO.Compression.FileSystem `
+            -ErrorAction Stop
+
+        [System.IO.Compression.ZipFile]::ExtractToDirectory(
+            $packageFile,
+            $extractDir
+        )
+
+        $installScript = Join-Path `
+            $extractDir `
+            "tools\chocolateyInstall.ps1"
+
+        if (-not (Test-Path $installScript)) {
+            throw "Chocolatey install script not found."
+        }
+
+        Write-Host "Running Chocolatey installer..."
+
+        & $installScript
+    }
+    finally {
+
+        Remove-Item `
+            $workDir `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
+
+# ------------------------------------------------------------
+# Chocolatey
+# ------------------------------------------------------------
+
+Write-Step "Checking Chocolatey"
+
+Refresh-Path
+
+if (Test-Command "choco") {
+
+    Write-Host "Chocolatey already installed:"
+    choco --version
+
 }
 else {
-    Write-Host "Chocolatey already installed."
+
+    Set-ExecutionPolicy `
+        Bypass `
+        -Scope Process `
+        -Force
+
+
+    # --------------------------------------------------------
+    # Check Microsoft.PowerShell.Archive
+    # --------------------------------------------------------
+
+    $archiveAvailable = $false
+
+    try {
+
+        Import-Module `
+            Microsoft.PowerShell.Archive `
+            -Force `
+            -ErrorAction Stop
+
+        $null = Get-Command `
+            "Microsoft.PowerShell.Archive\Expand-Archive" `
+            -ErrorAction Stop
+
+        $archiveAvailable = $true
+
+    }
+    catch {
+
+        Write-Warning `
+            "Microsoft.PowerShell.Archive is unavailable or broken."
+
+        $archiveAvailable = $false
+    }
+
+
+    # --------------------------------------------------------
+    # Install Chocolatey
+    # --------------------------------------------------------
+
+    if ($archiveAvailable) {
+
+        Write-Step "Installing Chocolatey"
+
+        Write-Host "Using official Chocolatey bootstrap installer..."
+
+        $installer = (
+            New-Object System.Net.WebClient
+        ).DownloadString(
+            "https://community.chocolatey.org/install.ps1"
+        )
+
+        Invoke-Expression $installer
+
+    }
+    else {
+
+        Install-ChocolateyWithDotNetZip
+
+    }
+
+
+    # --------------------------------------------------------
+    # Refresh PATH
+    # --------------------------------------------------------
+
+    Refresh-Path
+
+    $chocoExe = Join-Path `
+        $env:ProgramData `
+        "chocolatey\bin\choco.exe"
+
+    if (
+        (-not (Test-Command "choco")) -and
+        (Test-Path $chocoExe)
+    ) {
+        $env:Path = `
+            "$(Split-Path $chocoExe -Parent);$env:Path"
+    }
+
+    if (-not (Test-Command "choco")) {
+        throw "Chocolatey installation failed."
+    }
+
+    Write-Host ""
+    Write-Host "Chocolatey installed:"
+    choco --version
 }
 
 
 # ------------------------------------------------------------
-# kubectl / k9s / k6 / Terraform
+# Git / kubectl / k9s / k6 / Terraform
 # ------------------------------------------------------------
-Write-Host "Installing kubectl, k9s, k6, Terraform..."
 
-choco install kubernetes-cli k9s k6 terraform -y
+Write-Step "Installing Git, kubectl, k9s, k6 and Terraform"
+
+& choco install `
+    git `
+    kubernetes-cli `
+    k9s `
+    k6 `
+    terraform `
+    -y `
+    --no-progress
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Chocolatey package installation failed. Exit code: $LASTEXITCODE"
+}
+
+Refresh-Path
 
 
 # ------------------------------------------------------------
 # AWS CLI v2
-# Official AWS MSI installer
 # ------------------------------------------------------------
-if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing AWS CLI v2..."
 
-    $awsMsi = Join-Path $env:TEMP "AWSCLIV2.msi"
+Write-Step "Checking AWS CLI v2"
 
-    Invoke-WebRequest `
-        -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" `
-        -OutFile $awsMsi
+$installAws = $true
+
+if (Test-Command "aws") {
+
+    try {
+
+        $awsVersion = (& aws --version 2>&1 | Out-String).Trim()
+
+        Write-Host "Existing AWS CLI:"
+        Write-Host $awsVersion
+
+        if ($awsVersion -match "aws-cli/2\.") {
+            $installAws = $false
+        }
+
+    }
+    catch {
+        $installAws = $true
+    }
+}
+
+
+if ($installAws) {
+
+    if (-not [Environment]::Is64BitOperatingSystem) {
+        throw "AWS CLI v2 requires 64-bit Windows."
+    }
+
+    Write-Host "Installing AWS CLI v2 using official AWS MSI..."
+
+    $awsMsi = Join-Path `
+        $env:TEMP `
+        "AWSCLIV2.msi"
+
+    if (Test-Path $awsMsi) {
+        Remove-Item $awsMsi -Force
+    }
+
+
+    # --------------------------------------------------------
+    # Download AWS CLI MSI
+    # --------------------------------------------------------
+
+    $awsUrl = "https://awscli.amazonaws.com/AWSCLIV2.msi"
+
+    $awsWebClient = New-Object System.Net.WebClient
+
+    $awsWebClient.Credentials = `
+        [System.Net.CredentialCache]::DefaultCredentials
+
+    $awsWebClient.DownloadFile(
+        $awsUrl,
+        $awsMsi
+    )
+
+    if (-not (Test-Path $awsMsi)) {
+        throw "AWS CLI MSI download failed."
+    }
+
+
+    # --------------------------------------------------------
+    # Verify digital signature
+    # --------------------------------------------------------
+
+    Write-Host "Verifying AWS CLI MSI signature..."
+
+    $signature = Get-AuthenticodeSignature $awsMsi
+
+    if ($signature.Status -ne "Valid") {
+
+        Remove-Item `
+            $awsMsi `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+        throw "AWS CLI MSI signature verification failed: $($signature.Status)"
+    }
+
+    Write-Host "AWS MSI signature valid:"
+    Write-Host $signature.SignerCertificate.Subject
+
+
+    # --------------------------------------------------------
+    # Install AWS CLI
+    # --------------------------------------------------------
 
     $process = Start-Process `
         -FilePath "msiexec.exe" `
@@ -77,50 +438,246 @@ if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
         -Wait `
         -PassThru
 
-    Remove-Item $awsMsi -Force -ErrorAction SilentlyContinue
 
-    # 0 = success
+    Remove-Item `
+        $awsMsi `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+
+    # 0    = success
     # 3010 = success, reboot required
+
     if ($process.ExitCode -notin @(0, 3010)) {
-        throw "AWS CLI installation failed. Exit code: $($process.ExitCode)"
+
+        throw `
+            "AWS CLI installation failed. Exit code: $($process.ExitCode)"
     }
+
 }
 else {
-    Write-Host "AWS CLI already installed."
+
+    Write-Host "AWS CLI v2 already installed."
+}
+
+
+Refresh-Path
+
+
+# ------------------------------------------------------------
+# Verification
+# ------------------------------------------------------------
+
+Write-Step "Verifying installed tools"
+
+$failed = @()
+
+
+# ------------------------------------------------------------
+# Git
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- Git ---"
+
+if (Test-Command "git") {
+
+    try {
+        git --version
+    }
+    catch {
+        Write-Warning "Git verification failed."
+        $failed += "git"
+    }
+
+}
+else {
+
+    Write-Warning "Git not found."
+    $failed += "git"
 }
 
 
 # ------------------------------------------------------------
-# Refresh PATH
+# kubectl
 # ------------------------------------------------------------
-$env:Path = (
-    [Environment]::GetEnvironmentVariable("Path", "Machine"),
-    [Environment]::GetEnvironmentVariable("Path", "User")
-) -join ";"
-
-
-# ------------------------------------------------------------
-# Verify
-# ------------------------------------------------------------
-Write-Host ""
-Write-Host "========================================"
-Write-Host "Installed tools"
-Write-Host "========================================"
-
-Write-Host -NoNewline "kubectl:   "
-kubectl version --client
-
-Write-Host -NoNewline "k9s:       "
-k9s version
-
-Write-Host -NoNewline "k6:        "
-k6 version
-
-Write-Host -NoNewline "terraform: "
-terraform version
-
-Write-Host -NoNewline "aws:       "
-aws --version
 
 Write-Host ""
-Write-Host "Setup complete."
+Write-Host "--- kubectl ---"
+
+if (Test-Command "kubectl") {
+
+    try {
+        kubectl version --client
+    }
+    catch {
+        Write-Warning "kubectl verification failed."
+        $failed += "kubectl"
+    }
+
+}
+else {
+
+    Write-Warning "kubectl not found."
+    $failed += "kubectl"
+}
+
+
+# ------------------------------------------------------------
+# k9s
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- k9s ---"
+
+if (Test-Command "k9s") {
+
+    try {
+        k9s version
+    }
+    catch {
+        Write-Warning "k9s verification failed."
+        $failed += "k9s"
+    }
+
+}
+else {
+
+    Write-Warning "k9s not found."
+    $failed += "k9s"
+}
+
+
+# ------------------------------------------------------------
+# k6
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- k6 ---"
+
+if (Test-Command "k6") {
+
+    try {
+        k6 version
+    }
+    catch {
+        Write-Warning "k6 verification failed."
+        $failed += "k6"
+    }
+
+}
+else {
+
+    Write-Warning "k6 not found."
+    $failed += "k6"
+}
+
+
+# ------------------------------------------------------------
+# Terraform
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- Terraform ---"
+
+if (Test-Command "terraform") {
+
+    try {
+        terraform version
+    }
+    catch {
+        Write-Warning "Terraform verification failed."
+        $failed += "terraform"
+    }
+
+}
+else {
+
+    Write-Warning "Terraform not found."
+    $failed += "terraform"
+}
+
+
+# ------------------------------------------------------------
+# AWS CLI
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- AWS CLI ---"
+
+if (Test-Command "aws") {
+
+    try {
+        aws --version
+    }
+    catch {
+        Write-Warning "AWS CLI verification failed."
+        $failed += "aws"
+    }
+
+}
+else {
+
+    Write-Warning "AWS CLI not found."
+    $failed += "aws"
+}
+
+
+# ------------------------------------------------------------
+# Chocolatey
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- Chocolatey ---"
+
+if (Test-Command "choco") {
+
+    try {
+        choco --version
+    }
+    catch {
+        Write-Warning "Chocolatey verification failed."
+        $failed += "chocolatey"
+    }
+
+}
+else {
+
+    Write-Warning "Chocolatey not found."
+    $failed += "chocolatey"
+}
+
+
+# ------------------------------------------------------------
+# Result
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "============================================================"
+
+if ($failed.Count -eq 0) {
+
+    Write-Host "SETUP COMPLETE"
+    Write-Host ""
+    Write-Host "Installed:"
+    Write-Host "  - Chocolatey"
+    Write-Host "  - Git"
+    Write-Host "  - kubectl"
+    Write-Host "  - k9s"
+    Write-Host "  - k6"
+    Write-Host "  - Terraform"
+    Write-Host "  - AWS CLI v2"
+
+}
+else {
+
+    Write-Warning "Setup completed with verification failures:"
+
+    foreach ($item in $failed) {
+        Write-Warning "  - $item"
+    }
+
+    throw "One or more tools failed verification."
+}
+
+Write-Host "============================================================"
