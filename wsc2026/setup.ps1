@@ -12,6 +12,10 @@ $ProgressPreference = "SilentlyContinue"
 #   - k6
 #   - Terraform
 #   - AWS CLI v2
+#   - jq
+#   - Visual Studio Code
+#   - Python
+#   - Docker Desktop
 #
 # Run as Administrator:
 #   irm https://setup.swanno3o.com/wsc2026/setup.ps1 | iex
@@ -314,10 +318,10 @@ else {
 
 
 # ------------------------------------------------------------
-# Git / kubectl / k9s / k6 / Terraform
+# Git / kubectl / k9s / k6 / Terraform / jq / VS Code / Python / Docker
 # ------------------------------------------------------------
 
-Write-Step "Installing Git, kubectl, k9s, k6 and Terraform"
+Write-Step "Installing Git, kubectl, k9s, k6, Terraform, jq, VS Code, Python, and Docker Desktop"
 
 & choco install `
     git `
@@ -325,6 +329,10 @@ Write-Step "Installing Git, kubectl, k9s, k6 and Terraform"
     k9s `
     k6 `
     terraform `
+    jq `
+    vscode `
+    python `
+    docker-desktop `
     -y `
     --no-progress
 
@@ -379,79 +387,73 @@ if ($installAws) {
         Remove-Item $awsMsi -Force
     }
 
+    try {
+        # --------------------------------------------------------
+        # Download AWS CLI MSI
+        # --------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Download AWS CLI MSI
-    # --------------------------------------------------------
+        $awsUrl = "https://awscli.amazonaws.com/AWSCLIV2.msi"
 
-    $awsUrl = "https://awscli.amazonaws.com/AWSCLIV2.msi"
+        $awsWebClient = New-Object System.Net.WebClient
 
-    $awsWebClient = New-Object System.Net.WebClient
+        $awsWebClient.Credentials = `
+            [System.Net.CredentialCache]::DefaultCredentials
 
-    $awsWebClient.Credentials = `
-        [System.Net.CredentialCache]::DefaultCredentials
+        $awsWebClient.DownloadFile(
+            $awsUrl,
+            $awsMsi
+        )
 
-    $awsWebClient.DownloadFile(
-        $awsUrl,
-        $awsMsi
-    )
+        if (-not (Test-Path $awsMsi)) {
+            throw "AWS CLI MSI download failed."
+        }
 
-    if (-not (Test-Path $awsMsi)) {
-        throw "AWS CLI MSI download failed."
+
+        # --------------------------------------------------------
+        # Verify digital signature
+        # --------------------------------------------------------
+
+        Write-Host "Verifying AWS CLI MSI signature..."
+
+        $signature = Get-AuthenticodeSignature $awsMsi
+
+        if ($signature.Status -ne "Valid") {
+            throw "AWS CLI MSI signature verification failed: $($signature.Status)"
+        }
+
+        Write-Host "AWS MSI signature valid:"
+        Write-Host $signature.SignerCertificate.Subject
+
+
+        # --------------------------------------------------------
+        # Install AWS CLI
+        # --------------------------------------------------------
+
+        $process = Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList @(
+                "/i"
+                "`"$awsMsi`""
+                "/qn"
+                "/norestart"
+            ) `
+            -Wait `
+            -PassThru
+
+        # 0    = success
+        # 3010 = success, reboot required
+
+        if ($process.ExitCode -notin @(0, 3010)) {
+            throw "AWS CLI installation failed. Exit code: $($process.ExitCode)"
+        }
     }
-
-
-    # --------------------------------------------------------
-    # Verify digital signature
-    # --------------------------------------------------------
-
-    Write-Host "Verifying AWS CLI MSI signature..."
-
-    $signature = Get-AuthenticodeSignature $awsMsi
-
-    if ($signature.Status -ne "Valid") {
-
-        Remove-Item `
-            $awsMsi `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-        throw "AWS CLI MSI signature verification failed: $($signature.Status)"
-    }
-
-    Write-Host "AWS MSI signature valid:"
-    Write-Host $signature.SignerCertificate.Subject
-
-
-    # --------------------------------------------------------
-    # Install AWS CLI
-    # --------------------------------------------------------
-
-    $process = Start-Process `
-        -FilePath "msiexec.exe" `
-        -ArgumentList @(
-            "/i"
-            "`"$awsMsi`""
-            "/qn"
-            "/norestart"
-        ) `
-        -Wait `
-        -PassThru
-
-
-    Remove-Item `
-        $awsMsi `
-        -Force `
-        -ErrorAction SilentlyContinue
-
-
-    # 0    = success
-    # 3010 = success, reboot required
-
-    if ($process.ExitCode -notin @(0, 3010)) {
-
-        throw `
-            "AWS CLI installation failed. Exit code: $($process.ExitCode)"
+    finally {
+        if (Test-Path $awsMsi) {
+            Remove-Item `
+                $awsMsi `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
     }
 
 }
@@ -649,6 +651,106 @@ else {
 
 
 # ------------------------------------------------------------
+# jq
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- jq ---"
+
+if (Test-Command "jq") {
+
+    try {
+        jq --version
+    }
+    catch {
+        Write-Warning "jq verification failed."
+        $failed += "jq"
+    }
+
+}
+else {
+
+    Write-Warning "jq not found."
+    $failed += "jq"
+}
+
+
+# ------------------------------------------------------------
+# VS Code
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- VS Code ---"
+
+if (Test-Command "code") {
+
+    try {
+        code --version
+    }
+    catch {
+        Write-Warning "VS Code verification failed."
+        $failed += "vscode"
+    }
+
+}
+else {
+
+    Write-Warning "VS Code not found."
+    $failed += "vscode"
+}
+
+
+# ------------------------------------------------------------
+# Python
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- Python ---"
+
+if (Test-Command "python") {
+
+    try {
+        python --version
+    }
+    catch {
+        Write-Warning "Python verification failed."
+        $failed += "python"
+    }
+
+}
+else {
+
+    Write-Warning "Python not found."
+    $failed += "python"
+}
+
+
+# ------------------------------------------------------------
+# Docker
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "--- Docker ---"
+
+if (Test-Command "docker") {
+
+    try {
+        docker --version
+    }
+    catch {
+        Write-Warning "Docker verification failed."
+        $failed += "docker"
+    }
+
+}
+else {
+
+    Write-Warning "Docker not found."
+    $failed += "docker"
+}
+
+
+# ------------------------------------------------------------
 # Result
 # ------------------------------------------------------------
 
@@ -667,6 +769,10 @@ if ($failed.Count -eq 0) {
     Write-Host "  - k6"
     Write-Host "  - Terraform"
     Write-Host "  - AWS CLI v2"
+    Write-Host "  - jq"
+    Write-Host "  - Visual Studio Code"
+    Write-Host "  - Python"
+    Write-Host "  - Docker Desktop"
 
 }
 else {
