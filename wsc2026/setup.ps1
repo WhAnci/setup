@@ -323,6 +323,8 @@ else {
 
 Write-Step "Installing Git, kubectl, k9s, k6, Terraform, jq, VS Code, Python, and Docker Desktop"
 
+$rebootRequired = $false
+
 & choco install `
     git `
     kubernetes-cli `
@@ -336,8 +338,16 @@ Write-Step "Installing Git, kubectl, k9s, k6, Terraform, jq, VS Code, Python, an
     -y `
     --no-progress
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Chocolatey package installation failed. Exit code: $LASTEXITCODE"
+$chocoExitCode = $LASTEXITCODE
+
+# Chocolatey uses 3010 to mean that installation succeeded but Windows
+# must be rebooted before all changes take effect. It is not a failure.
+if ($chocoExitCode -eq 3010) {
+    $rebootRequired = $true
+    Write-Warning "Chocolatey installed the packages successfully, but a reboot is required. Continuing setup."
+}
+elseif ($chocoExitCode -ne 0) {
+    throw "Chocolatey package installation failed. Exit code: $chocoExitCode"
 }
 
 Refresh-Path
@@ -443,7 +453,11 @@ if ($installAws) {
         # 0    = success
         # 3010 = success, reboot required
 
-        if ($process.ExitCode -notin @(0, 3010)) {
+        if ($process.ExitCode -eq 3010) {
+            $rebootRequired = $true
+            Write-Warning "AWS CLI installed successfully, but a reboot is required."
+        }
+        elseif ($process.ExitCode -ne 0) {
             throw "AWS CLI installation failed. Exit code: $($process.ExitCode)"
         }
     }
@@ -756,6 +770,10 @@ else {
 
 Write-Host ""
 Write-Host "============================================================"
+
+if ($rebootRequired) {
+    Write-Warning "A reboot is required to complete the installation. Please reboot Windows before using the installed tools."
+}
 
 if ($failed.Count -eq 0) {
 
