@@ -526,48 +526,6 @@ if ($postSyncFailures.Count -gt 0) {
 }
 
 
-if (Test-Command "code") {
-    Write-Step "Installing VS Code extensions"
-
-    # These are public Marketplace extensions and do not require VS Code sign-in.
-    # Extensions that require an account can be added after the contest account is available.
-    $vscodeExtensions = @(
-        "ms-vscode.powershell"
-        "ms-python.python"
-        "ms-python.vscode-pylance"
-        "redhat.vscode-yaml"
-        "ms-azuretools.vscode-docker"
-        "ms-kubernetes-tools.vscode-kubernetes-tools"
-        "hashicorp.terraform"
-        "eamodio.gitlens"
-        "amazonwebservices.aws-toolkit-vscode"
-    )
-
-    $extensionFailures = New-Object System.Collections.ArrayList
-
-    foreach ($extension in $vscodeExtensions) {
-        Write-Host "Installing VS Code extension: $extension"
-        & code --install-extension $extension --force
-
-        if ($LASTEXITCODE -ne 0) {
-            [void]$extensionFailures.Add($extension)
-            Write-Warning "VS Code extension installation failed: $extension"
-        }
-    }
-
-    if ($extensionFailures.Count -gt 0) {
-        Write-Warning "Some VS Code extensions could not be installed. Retry later with:"
-        $extensionFailures | ForEach-Object { Write-Warning "  code --install-extension $_" }
-    }
-    else {
-        Write-Host "All configured VS Code extensions installed."
-    }
-}
-else {
-    Write-Warning "VS Code command was not found; skipping extension installation."
-}
-
-
 # ------------------------------------------------------------
 # AWS CLI v2
 # ------------------------------------------------------------
@@ -926,30 +884,6 @@ else {
 
     Write-Warning "VS Code not found."
     $failed += "vscode"
-}
-
-
-# ------------------------------------------------------------
-# VS Code extensions
-# ------------------------------------------------------------
-
-Write-Host ""
-Write-Host "--- VS Code extensions ---"
-
-if (Test-Command "code") {
-    try {
-        $installedExtensions = @(code --list-extensions)
-        Write-Host "Installed VS Code extensions: $($installedExtensions.Count)"
-        foreach ($extension in $installedExtensions) {
-            Write-Host "  - $extension"
-        }
-    }
-    catch {
-        Write-Warning "VS Code extension verification failed."
-    }
-}
-else {
-    Write-Warning "VS Code command not found; extension verification skipped."
 }
 
 
