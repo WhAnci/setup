@@ -151,6 +151,7 @@ $scriptRoots = @(
 } | Select-Object -Unique
 
 $unblockedCount = 0
+$scriptFailures = New-Object System.Collections.ArrayList
 
 foreach ($root in $scriptRoots) {
     $scripts = Get-ChildItem `
@@ -163,16 +164,26 @@ foreach ($root in $scriptRoots) {
     foreach ($script in $scripts) {
         try {
             Unblock-File -LiteralPath $script.FullName -ErrorAction Stop
-            [void](Convert-PowerShellScriptToUtf8Bom -Path $script.FullName)
+            if (-not (Convert-PowerShellScriptToUtf8Bom -Path $script.FullName)) {
+                [void]$scriptFailures.Add($script.FullName)
+                continue
+            }
             $unblockedCount++
         }
         catch {
-            Write-Warning "Could not unblock PowerShell script: $($script.FullName)"
+            [void]$scriptFailures.Add($script.FullName)
+            Write-Warning "Could not prepare PowerShell script: $($script.FullName)"
         }
     }
 }
 
-Write-Host "Unblocked $unblockedCount PowerShell script(s) in trusted workspaces."
+if ($scriptFailures.Count -gt 0) {
+    Write-Warning "The following PowerShell scripts could not be prepared:"
+    $scriptFailures | ForEach-Object { Write-Warning "  - $_" }
+    throw "PowerShell script preparation failed."
+}
+
+Write-Host "Prepared $unblockedCount PowerShell script(s) in trusted workspaces."
 
 
 # ------------------------------------------------------------
@@ -485,6 +496,8 @@ $workspaceRoots = @(
     $_ -and (Test-Path $_)
 } | Select-Object -Unique
 
+$postSyncFailures = New-Object System.Collections.ArrayList
+
 foreach ($root in $workspaceRoots) {
     Get-ChildItem `
         -Path $root `
@@ -492,11 +505,24 @@ foreach ($root in $workspaceRoots) {
         -File `
         -Recurse `
         -ErrorAction SilentlyContinue | ForEach-Object {
-            Unblock-File `
-                -LiteralPath $_.FullName `
-                -ErrorAction SilentlyContinue
-            [void](Convert-PowerShellScriptToUtf8Bom -Path $_.FullName)
+            try {
+                Unblock-File `
+                    -LiteralPath $_.FullName `
+                    -ErrorAction Stop
+                if (-not (Convert-PowerShellScriptToUtf8Bom -Path $_.FullName)) {
+                    [void]$postSyncFailures.Add($_.FullName)
+                }
+            }
+            catch {
+                [void]$postSyncFailures.Add($_.FullName)
+            }
         }
+}
+
+if ($postSyncFailures.Count -gt 0) {
+    Write-Warning "The following synced PowerShell scripts could not be prepared:"
+    $postSyncFailures | ForEach-Object { Write-Warning "  - $_" }
+    throw "Synced PowerShell script preparation failed."
 }
 
 
