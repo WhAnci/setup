@@ -104,6 +104,68 @@ Write-Host "Administrator privileges confirmed."
 
 
 # ------------------------------------------------------------
+# PowerShell script execution
+# ------------------------------------------------------------
+
+Write-Step "Configuring PowerShell script execution"
+
+# Allow this setup process to run local scripts and persist a reasonable
+# per-user policy for future contest workspace scripts.
+try {
+    Set-ExecutionPolicy `
+        -Scope Process `
+        -ExecutionPolicy Bypass `
+        -Force `
+        -ErrorAction Stop
+
+    Set-ExecutionPolicy `
+        -Scope CurrentUser `
+        -ExecutionPolicy RemoteSigned `
+        -Force `
+        -ErrorAction Stop
+
+    Write-Host "PowerShell execution policy configured."
+}
+catch {
+    Write-Warning "Could not change the PowerShell execution policy: $($_.Exception.Message)"
+}
+
+# Files downloaded from the Internet can carry a Zone.Identifier alternate
+# data stream. Remove that mark from trusted local contest workspaces so
+# scripts such as tools\check.ps1 can run normally.
+$scriptRoots = @(
+    $PSScriptRoot
+    (Join-Path $env:USERPROFILE "Documents\Github")
+    (Join-Path $env:USERPROFILE "Desktop")
+) | Where-Object {
+    $_ -and (Test-Path $_)
+} | Select-Object -Unique
+
+$unblockedCount = 0
+
+foreach ($root in $scriptRoots) {
+    $scripts = Get-ChildItem `
+        -Path $root `
+        -Filter "*.ps1" `
+        -File `
+        -Recurse `
+        -ErrorAction SilentlyContinue
+
+    foreach ($script in $scripts) {
+        try {
+            Unblock-File -LiteralPath $script.FullName -ErrorAction Stop
+            $unblockedCount++
+        }
+        catch {
+            Write-Warning "Could not unblock PowerShell script: $($script.FullName)"
+        }
+    }
+}
+
+Write-Host "Unblocked $unblockedCount PowerShell script(s) in trusted workspaces."
+
+
+# ------------------------------------------------------------
 # TLS 1.2
 # ------------------------------------------------------------
 
