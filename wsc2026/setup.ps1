@@ -526,6 +526,78 @@ if ($postSyncFailures.Count -gt 0) {
 }
 
 
+if (Test-Command "code") {
+    Write-Step "Installing selected VS Code extensions"
+
+    $vscodeExtensions = @(
+        "teabyii.ayu"
+        "PKief.material-icon-theme"
+        "DavidAnson.vscode-markdownlint"
+        "ms-vscode-remote.remote-ssh"
+    )
+
+    $extensionFailures = New-Object System.Collections.ArrayList
+
+    foreach ($extension in $vscodeExtensions) {
+        Write-Host "Installing VS Code extension: $extension"
+        & code --install-extension $extension --force
+
+        if ($LASTEXITCODE -ne 0) {
+            [void]$extensionFailures.Add($extension)
+            Write-Warning "VS Code extension installation failed: $extension"
+        }
+    }
+
+    if ($extensionFailures.Count -gt 0) {
+        Write-Warning "Some VS Code extensions could not be installed. Retry later with:"
+        $extensionFailures | ForEach-Object {
+            Write-Warning "  code --install-extension $_"
+        }
+    }
+
+    # Preserve existing VS Code settings and update only the requested themes.
+    $vscodeSettingsPath = Join-Path $env:APPDATA "Code\User\settings.json"
+    $vscodeSettingsDir = Split-Path $vscodeSettingsPath -Parent
+
+    try {
+        New-Item -ItemType Directory -Path $vscodeSettingsDir -Force | Out-Null
+
+        if (Test-Path $vscodeSettingsPath) {
+            $settingsText = Get-Content -LiteralPath $vscodeSettingsPath -Raw
+            $vscodeSettings = $settingsText | ConvertFrom-Json
+        }
+        else {
+            $vscodeSettings = [PSCustomObject]@{}
+        }
+
+        $vscodeSettings | Add-Member `
+            -MemberType NoteProperty `
+            -Name "workbench.colorTheme" `
+            -Value "Ayu Light" `
+            -Force
+
+        $vscodeSettings | Add-Member `
+            -MemberType NoteProperty `
+            -Name "workbench.iconTheme" `
+            -Value "material-icon-theme" `
+            -Force
+
+        $vscodeSettings | ConvertTo-Json -Depth 20 | Set-Content `
+            -LiteralPath $vscodeSettingsPath `
+            -Encoding UTF8
+
+        Write-Host "VS Code theme configured: Ayu Light"
+        Write-Host "VS Code icon theme configured: Material Icon Theme"
+    }
+    catch {
+        Write-Warning "Could not update VS Code settings: $($_.Exception.Message)"
+    }
+}
+else {
+    Write-Warning "VS Code command was not found; skipping extension installation."
+}
+
+
 # ------------------------------------------------------------
 # AWS CLI v2
 # ------------------------------------------------------------
