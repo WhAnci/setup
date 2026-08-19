@@ -354,6 +354,54 @@ Refresh-Path
 
 
 # ------------------------------------------------------------
+# GitHub setup repository
+# ------------------------------------------------------------
+
+Write-Step "Syncing GitHub setup repository"
+
+if (-not (Test-Command "git")) {
+    throw "Git was not found after installation."
+}
+
+$githubRoot = Join-Path $env:USERPROFILE "Documents\Github"
+$setupRepo = Join-Path $githubRoot "setup"
+$setupRemote = "https://github.com/WhAnci/setup.git"
+
+New-Item `
+    -ItemType Directory `
+    -Path $githubRoot `
+    -Force | Out-Null
+
+if (Test-Path (Join-Path $setupRepo ".git")) {
+    Write-Host "Existing setup repository found:"
+    Write-Host $setupRepo
+
+    & git -C $setupRepo remote set-url origin $setupRemote
+    & git -C $setupRepo pull --ff-only origin main
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git pull failed for $setupRepo. Check for local changes or conflicts."
+    }
+}
+elseif (Test-Path $setupRepo) {
+    throw "The setup directory exists but is not a Git repository: $setupRepo"
+}
+else {
+    Write-Host "Cloning setup repository to:"
+    Write-Host $setupRepo
+
+    & git clone --branch main $setupRemote $setupRepo
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git clone failed for $setupRemote"
+    }
+}
+
+Write-Host "Setup repository is ready:"
+Write-Host $setupRepo
+
+
+# ------------------------------------------------------------
 # AWS CLI v2
 # ------------------------------------------------------------
 
