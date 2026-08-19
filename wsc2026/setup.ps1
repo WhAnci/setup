@@ -363,13 +363,17 @@ if (-not (Test-Command "git")) {
     throw "Git was not found after installation."
 }
 
-$githubRoot = Join-Path $env:USERPROFILE "Documents\Github"
-$setupRepo = Join-Path $githubRoot "setup"
+$desktopPath = [Environment]::GetFolderPath("Desktop")
+$setupRepo = Join-Path $desktopPath "setup"
 $setupRemote = "https://github.com/WhAnci/setup.git"
+
+if (-not $desktopPath) {
+    throw "Could not determine the current user's Desktop path."
+}
 
 New-Item `
     -ItemType Directory `
-    -Path $githubRoot `
+    -Path $desktopPath `
     -Force | Out-Null
 
 if (Test-Path (Join-Path $setupRepo ".git")) {
@@ -387,7 +391,7 @@ elseif (Test-Path $setupRepo) {
     throw "The setup directory exists but is not a Git repository: $setupRepo"
 }
 else {
-    Write-Host "Cloning setup repository to:"
+    Write-Host "Cloning setup repository to the Desktop:"
     Write-Host $setupRepo
 
     & git clone --branch main $setupRemote $setupRepo
