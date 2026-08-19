@@ -64,13 +64,22 @@ function Refresh-Path {
 }
 
 
-function Test-Command {
+function Convert-PowerShellScriptToUtf8Bom {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Name
+        [string]$Path
     )
 
-    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+    try {
+        $content = [System.IO.File]::ReadAllText($Path)
+        $encoding = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::WriteAllText($Path, $content, $encoding)
+        return $true
+    }
+    catch {
+        Write-Warning "Could not convert PowerShell script encoding: $Path"
+        return $false
+    }
 }
 
 
@@ -154,6 +163,7 @@ foreach ($root in $scriptRoots) {
     foreach ($script in $scripts) {
         try {
             Unblock-File -LiteralPath $script.FullName -ErrorAction Stop
+            [void](Convert-PowerShellScriptToUtf8Bom -Path $script.FullName)
             $unblockedCount++
         }
         catch {
@@ -485,6 +495,7 @@ foreach ($root in $workspaceRoots) {
             Unblock-File `
                 -LiteralPath $_.FullName `
                 -ErrorAction SilentlyContinue
+            [void](Convert-PowerShellScriptToUtf8Bom -Path $_.FullName)
         }
 }
 
