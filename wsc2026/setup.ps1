@@ -466,6 +466,28 @@ else {
 Write-Host "Setup repository is ready:"
 Write-Host $setupRepo
 
+# Repeat the unblock step after clone/pull so newly downloaded workspace files
+# are also runnable immediately.
+$workspaceRoots = @(
+    (Join-Path $env:USERPROFILE "Documents\Github")
+    (Join-Path $env:USERPROFILE "Desktop")
+) | Where-Object {
+    $_ -and (Test-Path $_)
+} | Select-Object -Unique
+
+foreach ($root in $workspaceRoots) {
+    Get-ChildItem `
+        -Path $root `
+        -Filter "*.ps1" `
+        -File `
+        -Recurse `
+        -ErrorAction SilentlyContinue | ForEach-Object {
+            Unblock-File `
+                -LiteralPath $_.FullName `
+                -ErrorAction SilentlyContinue
+        }
+}
+
 
 # ------------------------------------------------------------
 # AWS CLI v2
