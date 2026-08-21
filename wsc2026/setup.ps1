@@ -54,6 +54,54 @@ function Test-Command {
 $chromeWasRunning = $false
 $chromeExecutable = $null
 
+function Get-ChromeExecutable {
+    $candidates = @(
+        $script:chromeExecutable
+        (Join-Path ${env:ProgramFiles} "Google\Chrome\Application\chrome.exe")
+        (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
+        (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
+        (Join-Path $env:LOCALAPPDATA "Google\Chrome SxS\Application\chrome.exe")
+    )
+
+    $appPathKeys = @(
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+    )
+
+    foreach ($key in $appPathKeys) {
+        try {
+            $registeredPath = (Get-ItemProperty -Path $key -ErrorAction Stop).'(default)'
+            if ($registeredPath) {
+                $candidates += [string]$registeredPath
+            }
+        }
+        catch {
+            # The registry key is optional.
+        }
+    }
+
+    $command = Get-Command "chrome.exe" -ErrorAction SilentlyContinue
+    if ($command -and $command.Source) {
+        $candidates += $command.Source
+    }
+
+    foreach ($candidate in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+        try {
+            $resolvedPath = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+            if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+                return $resolvedPath
+            }
+        }
+        catch {
+            # Try the next candidate.
+        }
+    }
+
+    return $null
+}
+
+
 function Stop-ChromeForSetup {
     $chromeProcesses = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
 
@@ -62,6 +110,7 @@ function Stop-ChromeForSetup {
     }
 
     $script:chromeWasRunning = $true
+    $script:chromeExecutable = Get-ChromeExecutable
 
     foreach ($process in $chromeProcesses) {
         if (-not $script:chromeExecutable) {
@@ -93,28 +142,16 @@ function Start-ChromeAfterSetup {
         return
     }
 
-    $chromeCandidates = @(
-        $script:chromeExecutable
-        (Join-Path ${env:ProgramFiles} "Google\Chrome\Application\chrome.exe")
-        (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
-        (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
-    ) | Where-Object {
-        $_ -and (Test-Path $_)
-    } | Select-Object -Unique
-
     try {
-        if ($chromeCandidates.Count -gt 0) {
-            Start-Process -FilePath $chromeCandidates[0]
-        }
-        elseif (Test-Command "chrome") {
-            Start-Process -FilePath "chrome.exe"
-        }
-        else {
+        $chromePath = Get-ChromeExecutable
+
+        if (-not $chromePath) {
             Write-Warning "Chrome was running before setup but its executable could not be found. Start Chrome manually."
             return
         }
 
-        Write-Host "Chrome restarted."
+        Start-Process -FilePath $chromePath
+        Write-Host "Chrome restarted: $chromePath"
     }
     catch {
         Write-Warning "Chrome was closed but could not be restarted: $($_.Exception.Message)"
