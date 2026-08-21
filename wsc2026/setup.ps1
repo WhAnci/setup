@@ -154,6 +154,7 @@ catch {
 # Files downloaded from the Internet can carry a Zone.Identifier alternate
 # data stream. Remove that mark from trusted local contest workspaces so
 # scripts such as tools\check.ps1 can run normally.
+$setupRepoPath = Join-Path (Join-Path $env:USERPROFILE "Desktop") "setup"
 $scriptRoots = @(
     $PSScriptRoot
     (Join-Path $env:USERPROFILE "Documents\Github")
@@ -171,7 +172,10 @@ foreach ($root in $scriptRoots) {
         -Filter "*.ps1" `
         -File `
         -Recurse `
-        -ErrorAction SilentlyContinue
+        -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notlike "$setupRepoPath\*"
+        }
 
     foreach ($script in $scripts) {
         try {
@@ -460,19 +464,7 @@ $uBlockOriginLite = "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.co
 $managedBookmarkName = "swanno3o"
 $managedBookmarkUrl = "https://w.swanno3o.com"
 
-$chromePaths = @(
-    (Join-Path ${env:ProgramFiles} "Google\Chrome\Application\chrome.exe")
-    (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
-    (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
-) | Where-Object {
-    $_ -and (Test-Path $_)
-}
-
-if ((-not (Test-Command "chrome")) -and ($chromePaths.Count -eq 0)) {
-    Write-Warning "Google Chrome was not found. Chrome will not be installed; skipping Chrome policy configuration."
-}
-else {
-    try {
+try {
         New-Item -Path $chromePolicyPath -Force | Out-Null
         New-Item -Path $extensionPolicyPath -Force | Out-Null
 
@@ -550,7 +542,6 @@ else {
     catch {
         throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
     }
-}
 
 
 # ------------------------------------------------------------
@@ -581,10 +572,18 @@ if (Test-Path (Join-Path $setupRepo ".git")) {
     Write-Host $setupRepo
 
     & git -C $setupRepo remote set-url origin $setupRemote
-    & git -C $setupRepo pull --ff-only origin main
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Git pull failed for $setupRepo. Check for local changes or conflicts."
+    $setupChanges = & git -C $setupRepo status --porcelain
+
+    if ($setupChanges) {
+        Write-Warning "Local changes found in $setupRepo. Skipping Git pull to avoid overwriting them."
+    }
+    else {
+        & git -C $setupRepo pull --ff-only origin main
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Git pull failed for $setupRepo. Check the network connection or repository state."
+        }
     }
 }
 elseif (Test-Path $setupRepo) {
@@ -658,7 +657,11 @@ foreach ($root in $workspaceRoots) {
         -Filter "*.ps1" `
         -File `
         -Recurse `
-        -ErrorAction SilentlyContinue | ForEach-Object {
+        -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notlike "$setupRepoPath\*"
+        } |
+        ForEach-Object {
             try {
                 Unblock-File `
                     -LiteralPath $_.FullName `
