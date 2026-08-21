@@ -698,22 +698,38 @@ try {
         -Name "ManagedBookmarks" `
         -ErrorAction SilentlyContinue
 
+    $pythonCandidates = @(
+        (Get-Command "python.exe" -ErrorAction SilentlyContinue).Source
+        (Join-Path $env:ProgramFiles "Python314\python.exe")
+        (Join-Path ${env:ProgramFiles(x86)} "Python314\python.exe")
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python314\python.exe")
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe")
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe")
+    ) | Where-Object {
+        $_ -and (Test-Path $_ -PathType Leaf)
+    } | Select-Object -First 1
+
+    if (-not $pythonCandidates) {
+        throw "Python was not found. Chrome bookmark configuration requires Python."
+    }
+
     $chromeUserDataPath = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
     $chromeProfiles = @(
-            Join-Path $chromeUserDataPath "Default"
-            Get-ChildItem `
-                -Path $chromeUserDataPath `
-                -Directory `
-                -Filter "Profile *" `
-                -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-        ) | Where-Object {
-            $_ -and (Test-Path (Join-Path $_ "Bookmarks"))
-        } | Select-Object -Unique
+        (Join-Path $chromeUserDataPath "Default")
+        Get-ChildItem `
+            -Path $chromeUserDataPath `
+            -Directory `
+            -Filter "Profile *" `
+            -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+    ) | Where-Object {
+        $_ -and (Test-Path (Join-Path $_ "Bookmarks") -PathType Leaf)
+    } | Select-Object -Unique
 
-        if ($chromeProfiles.Count -eq 0) {
-            Write-Warning "No Chrome profile was found. The bookmark will be added when a Chrome profile exists."
-        }
-        else {
+    if ($chromeProfiles.Count -eq 0) {
+        Write-Warning "No Chrome profile was found under $chromeUserDataPath."
+    }
+    else {
+        Write-Host "Chrome profile(s) found: $($chromeProfiles -join ', ')"
             $bookmarkTimestamp = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000 + 11644473600000000).ToString()
             $bookmarkAdded = $false
             $bookmarkPythonCode = @'
@@ -770,39 +786,52 @@ except Exception:
 print("ADDED")
 '@
 
-            foreach ($profile in $chromeProfiles) {
-                $bookmarksPath = Join-Path $profile "Bookmarks"
-                $backupPath = "$bookmarksPath.setup-backup"
+            $bookmarkUpdaterPath = Join-Path $env:TEMP ("setup-chrome-bookmark-" + [Guid]::NewGuid().ToString("N") + ".py")
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($bookmarkUpdaterPath, $bookmarkPythonCode, $utf8NoBom)
 
-                try {
-                    Copy-Item -LiteralPath $bookmarksPath -Destination $backupPath -Force
-                    $pythonResult = @(
-                        $bookmarkPythonCode |
-                            & python - $bookmarksPath $bookmarkName $bookmarkUrl 2>&1
-                    )
+            try {
+                foreach ($profile in $chromeProfiles) {
+                    $bookmarksPath = Join-Path $profile "Bookmarks"
+                    $backupPath = "$bookmarksPath.setup-backup"
 
-                    if ($LASTEXITCODE -ne 0) {
-                        throw ($pythonResult -join [Environment]::NewLine)
+                    try {
+                        Copy-Item -LiteralPath $bookmarksPath -Destination $backupPath -Force
+                        $pythonResult = @(
+                            & $pythonCandidates $bookmarkUpdaterPath $bookmarksPath $bookmarkName $bookmarkUrl 2>&1 |
+                                ForEach-Object { [string]$_ }
+                        )
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw (($pythonResult -join [Environment]::NewLine).Trim())
+                        }
+
+                        $pythonStatus = ($pythonResult -join "`n").Trim()
+                        if ($pythonStatus -match "(?m)^ADDED\s*$") {
+                            $bookmarkAdded = $true
+                            Write-Host "Added $bookmarkUrl to the Chrome bookmark bar in profile: $profile"
+                        }
+                        elseif ($pythonStatus -match "(?m)^EXISTS\s*$") {
+                            Write-Host "Bookmark already exists in Chrome profile: $profile"
+                        }
+                        else {
+                            throw "Unexpected bookmark updater output: $pythonStatus"
+                        }
                     }
-
-                    if ($pythonResult -contains "ADDED") {
-                        $bookmarkAdded = $true
-                        Write-Host "Added $bookmarkUrl to the Chrome bookmark bar in profile: $profile"
-                    }
-                    else {
-                        Write-Host "Bookmark already exists in Chrome profile: $profile"
+                    catch {
+                        Write-Warning "Could not update Chrome bookmarks in profile '$profile': $($_.Exception.Message)"
                     }
                 }
-                catch {
-                    Write-Warning "Could not update Chrome bookmarks in profile '$profile': $($_.Exception.Message)"
-                }
+            }
+            finally {
+                Remove-Item -LiteralPath $bookmarkUpdaterPath -Force -ErrorAction SilentlyContinue
             }
 
             if ($bookmarkAdded) {
                 Write-Host "Chrome bookmark bar updated. Start Chrome to see the link."
             }
         }
-}
+    }
 catch {
     throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
 }
