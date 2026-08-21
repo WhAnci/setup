@@ -51,6 +51,47 @@ function Test-Command {
 }
 
 
+function Download-File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    $curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+
+    if ($curl) {
+        Write-Host "Downloading with curl.exe: $Url"
+
+        & $curl.Source `
+            --fail `
+            --location `
+            --retry 3 `
+            --retry-delay 2 `
+            --connect-timeout 20 `
+            --max-time 600 `
+            --output $Destination `
+            $Url
+
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $Destination)) {
+            return
+        }
+
+        Write-Warning "curl.exe download failed. Retrying with .NET WebClient."
+    }
+
+    $webClient = New-Object System.Net.WebClient
+    $webClient.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    $webClient.DownloadFile($Url, $Destination)
+
+    if (-not (Test-Path $Destination)) {
+        throw "Download failed: $Url"
+    }
+}
+
+
 $chromeWasRunning = $false
 $chromeExecutable = $null
 
@@ -1056,10 +1097,9 @@ if ($installAws) {
         $awsWebClient.Credentials = `
             [System.Net.CredentialCache]::DefaultCredentials
 
-        $awsWebClient.DownloadFile(
-            $awsUrl,
-            $awsMsi
-        )
+        Download-File `
+            -Url $awsUrl `
+            -Destination $awsMsi
 
         if (-not (Test-Path $awsMsi)) {
             throw "AWS CLI MSI download failed."
