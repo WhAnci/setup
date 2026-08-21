@@ -16,7 +16,6 @@ $ProgressPreference = "SilentlyContinue"
 #   - Visual Studio Code
 #   - Python
 #   - Docker Desktop
-#   - Google Chrome
 #   - uBlock Origin Lite Chrome extension
 #   - w.swanno3o.com Chrome managed bookmark
 #
@@ -431,7 +430,6 @@ $rebootRequired = $false
     vscode `
     python `
     docker-desktop `
-    googlechrome `
     -y `
     --no-progress
 
@@ -462,83 +460,96 @@ $uBlockOriginLite = "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.co
 $managedBookmarkName = "swanno3o"
 $managedBookmarkUrl = "https://w.swanno3o.com"
 
-try {
-    New-Item -Path $chromePolicyPath -Force | Out-Null
-    New-Item -Path $extensionPolicyPath -Force | Out-Null
+$chromePaths = @(
+    (Join-Path ${env:ProgramFiles} "Google\Chrome\Application\chrome.exe")
+    (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
+    (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
+) | Where-Object {
+    $_ -and (Test-Path $_)
+}
 
-    $extensionProperties = Get-ItemProperty -Path $extensionPolicyPath
-    $extensionValues = @(
-        $extensionProperties.PSObject.Properties |
-            Where-Object { $_.Name -notlike "PS*" } |
-            ForEach-Object { [string]$_.Value }
-    )
+if ((-not (Test-Command "chrome")) -and ($chromePaths.Count -eq 0)) {
+    Write-Warning "Google Chrome was not found. Chrome will not be installed; skipping Chrome policy configuration."
+}
+else {
+    try {
+        New-Item -Path $chromePolicyPath -Force | Out-Null
+        New-Item -Path $extensionPolicyPath -Force | Out-Null
 
-    if ($extensionValues -notcontains $uBlockOriginLite) {
-        $extensionNumber = 1
-        while ($extensionProperties.PSObject.Properties.Name -contains [string]$extensionNumber) {
-            $extensionNumber++
+        $extensionProperties = Get-ItemProperty -Path $extensionPolicyPath
+        $extensionValues = @(
+            $extensionProperties.PSObject.Properties |
+                Where-Object { $_.Name -notlike "PS*" } |
+                ForEach-Object { [string]$_.Value }
+        )
+
+        if ($extensionValues -notcontains $uBlockOriginLite) {
+            $extensionNumber = 1
+            while ($extensionProperties.PSObject.Properties.Name -contains [string]$extensionNumber) {
+                $extensionNumber++
+            }
+
+            New-ItemProperty `
+                -Path $extensionPolicyPath `
+                -Name ([string]$extensionNumber) `
+                -Value $uBlockOriginLite `
+                -PropertyType String `
+                -Force | Out-Null
+
+            Write-Host "uBlock Origin Lite force-install policy configured."
+        }
+        else {
+            Write-Host "uBlock Origin Lite force-install policy already configured."
         }
 
-        New-ItemProperty `
-            -Path $extensionPolicyPath `
-            -Name ([string]$extensionNumber) `
-            -Value $uBlockOriginLite `
-            -PropertyType String `
-            -Force | Out-Null
+        $managedBookmarks = @()
+        $managedBookmarksProperty = Get-ItemProperty `
+            -Path $chromePolicyPath `
+            -Name "ManagedBookmarks" `
+            -ErrorAction SilentlyContinue
 
-        Write-Host "uBlock Origin Lite force-install policy configured."
-    }
-    else {
-        Write-Host "uBlock Origin Lite force-install policy already configured."
-    }
-
-    $managedBookmarks = @()
-    $managedBookmarksProperty = Get-ItemProperty `
-        -Path $chromePolicyPath `
-        -Name "ManagedBookmarks" `
-        -ErrorAction SilentlyContinue
-
-    if ($managedBookmarksProperty) {
-        try {
-            $managedBookmarks = @(
-                $managedBookmarksProperty.ManagedBookmarks | ConvertFrom-Json
-            )
-        }
-        catch {
-            throw "Could not parse the existing Chrome managed bookmarks policy."
-        }
-    }
-
-    $bookmarkExists = @(
-        $managedBookmarks | Where-Object { $_.url -eq $managedBookmarkUrl }
-    ).Count -gt 0
-
-    if (-not $bookmarkExists) {
-        if ($managedBookmarks.Count -eq 0) {
-            $managedBookmarks += [PSCustomObject]@{
-                toplevel_name = "Managed bookmarks"
+        if ($managedBookmarksProperty) {
+            try {
+                $managedBookmarks = @(
+                    $managedBookmarksProperty.ManagedBookmarks | ConvertFrom-Json
+                )
+            }
+            catch {
+                throw "Could not parse the existing Chrome managed bookmarks policy."
             }
         }
 
-        $managedBookmarks += [PSCustomObject]@{
-            name = $managedBookmarkName
-            url = $managedBookmarkUrl
+        $bookmarkExists = @(
+            $managedBookmarks | Where-Object { $_.url -eq $managedBookmarkUrl }
+        ).Count -gt 0
+
+        if (-not $bookmarkExists) {
+            if ($managedBookmarks.Count -eq 0) {
+                $managedBookmarks += [PSCustomObject]@{
+                    toplevel_name = "Managed bookmarks"
+                }
+            }
+
+            $managedBookmarks += [PSCustomObject]@{
+                name = $managedBookmarkName
+                url = $managedBookmarkUrl
+            }
         }
+
+        $managedBookmarksJson = $managedBookmarks | ConvertTo-Json -Depth 10 -Compress
+        New-ItemProperty `
+            -Path $chromePolicyPath `
+            -Name "ManagedBookmarks" `
+            -Value $managedBookmarksJson `
+            -PropertyType String `
+            -Force | Out-Null
+
+        Write-Host "Chrome managed bookmark configured: $managedBookmarkUrl"
+        Write-Host "Restart Chrome to apply the extension and bookmark policies."
     }
-
-    $managedBookmarksJson = $managedBookmarks | ConvertTo-Json -Depth 10 -Compress
-    New-ItemProperty `
-        -Path $chromePolicyPath `
-        -Name "ManagedBookmarks" `
-        -Value $managedBookmarksJson `
-        -PropertyType String `
-        -Force | Out-Null
-
-    Write-Host "Chrome managed bookmark configured: $managedBookmarkUrl"
-    Write-Host "Restart Chrome to apply the extension and bookmark policies."
-}
-catch {
-    throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
+    catch {
+        throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
+    }
 }
 
 
@@ -1179,9 +1190,8 @@ if ($failed.Count -eq 0) {
     Write-Host "  - Visual Studio Code"
     Write-Host "  - Python"
     Write-Host "  - Docker Desktop"
-    Write-Host "  - Google Chrome"
-    Write-Host "  - uBlock Origin Lite Chrome extension"
-    Write-Host "  - w.swanno3o.com Chrome managed bookmark"
+    Write-Host "  - uBlock Origin Lite Chrome extension (if Chrome is installed)"
+    Write-Host "  - w.swanno3o.com Chrome managed bookmark (if Chrome is installed)"
 
 }
 else {
