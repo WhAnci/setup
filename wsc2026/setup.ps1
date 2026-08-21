@@ -635,39 +635,76 @@ try {
         else {
             $bookmarkTimestamp = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000 + 11644473600000000).ToString()
             $bookmarkAdded = $false
+            $bookmarkPythonCode = @'
+import json
+import os
+import sys
+import tempfile
+import time
+import uuid
+
+path, name, url = sys.argv[1:4]
+with open(path, "r", encoding="utf-8-sig") as source:
+    data = json.load(source)
+
+bookmark_bar = data["roots"]["bookmark_bar"]
+children = bookmark_bar.setdefault("children", [])
+
+if any(item.get("url") == url for item in children):
+    print("EXISTS")
+    raise SystemExit(0)
+
+numeric_ids = []
+for item in children:
+    try:
+        numeric_ids.append(int(item.get("id", "0")))
+    except (TypeError, ValueError):
+        pass
+
+chrome_timestamp = str(int((time.time() + 11644473600) * 1000000))
+children.append({
+    "date_added": chrome_timestamp,
+    "guid": str(uuid.uuid4()),
+    "id": str(max(numeric_ids, default=0) + 1),
+    "name": name,
+    "type": "url",
+    "url": url,
+})
+bookmark_bar["date_modified"] = chrome_timestamp
+
+folder = os.path.dirname(path)
+fd, temporary_path = tempfile.mkstemp(prefix="Bookmarks.setup-", dir=folder)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as target:
+        json.dump(data, target, ensure_ascii=False, indent=2)
+        target.write("\n")
+    os.replace(temporary_path, path)
+except Exception:
+    try:
+        os.unlink(temporary_path)
+    except FileNotFoundError:
+        pass
+    raise
+
+print("ADDED")
+'@
 
             foreach ($profile in $chromeProfiles) {
                 $bookmarksPath = Join-Path $profile "Bookmarks"
                 $backupPath = "$bookmarksPath.setup-backup"
 
                 try {
-                    $bookmarks = Get-Content -LiteralPath $bookmarksPath -Raw | ConvertFrom-Json
-                    $bookmarkBar = $bookmarks.roots.bookmark_bar
-                    $existingBookmark = @(
-                        $bookmarkBar.children | Where-Object { $_.url -eq $bookmarkUrl }
+                    Copy-Item -LiteralPath $bookmarksPath -Destination $backupPath -Force
+                    $pythonResult = @(
+                        $bookmarkPythonCode |
+                            & python - $bookmarksPath $bookmarkName $bookmarkUrl 2>&1
                     )
 
-                    if ($existingBookmark.Count -eq 0) {
-                        $maxId = 0
-                        foreach ($item in $bookmarkBar.children) {
-                            $itemId = 0
-                            if ([int]::TryParse([string]$item.id, [ref]$itemId) -and $itemId -gt $maxId) {
-                                $maxId = $itemId
-                            }
-                        }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw ($pythonResult -join [Environment]::NewLine)
+                    }
 
-                        $bookmarkBar.children += [PSCustomObject]@{
-                            date_added = $bookmarkTimestamp
-                            guid = [Guid]::NewGuid().ToString()
-                            id = ([string]($maxId + 1))
-                            name = $bookmarkName
-                            type = "url"
-                            url = $bookmarkUrl
-                        }
-                        $bookmarkBar.date_modified = $bookmarkTimestamp
-
-                        Copy-Item -LiteralPath $bookmarksPath -Destination $backupPath -Force
-                        $bookmarks | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $bookmarksPath -Encoding UTF8
+                    if ($pythonResult -contains "ADDED") {
                         $bookmarkAdded = $true
                         Write-Host "Added $bookmarkUrl to the Chrome bookmark bar in profile: $profile"
                     }
