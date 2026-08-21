@@ -39,6 +39,16 @@ function Write-Step {
 }
 
 
+function Test-Command {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+
 function Refresh-Path {
     $machinePath = [Environment]::GetEnvironmentVariable(
         "Path",
