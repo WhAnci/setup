@@ -60,12 +60,15 @@ function Download-File {
         [string]$Destination
     )
 
-    $curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    $curlPath = (
+        Get-Command "curl.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    ).Source
 
-    if ($curl) {
+    if ($curlPath) {
         Write-Host "Downloading with curl.exe: $Url"
 
-        & $curl.Source `
+        & $curlPath `
             --fail `
             --location `
             --retry 3 `
