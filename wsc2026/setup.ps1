@@ -17,7 +17,7 @@ $ProgressPreference = "SilentlyContinue"
 #   - Python
 #   - Docker Desktop
 #   - uBlock Origin Lite Chrome extension
-#   - w.swanno3o.com Chrome managed bookmark
+#   - w.swanno3o.com Chrome bookmark bar link
 #
 # Run as Administrator:
 #   irm https://setup.swanno3o.com/wsc2026/setup.ps1 | iex
@@ -453,95 +453,130 @@ Refresh-Path
 
 
 # ------------------------------------------------------------
-# Chrome extension and managed bookmark
+# Chrome extension and bookmark bar
 # ------------------------------------------------------------
 
-Write-Step "Configuring Chrome extension and managed bookmark"
+Write-Step "Configuring Chrome extension and bookmark bar"
 
 $chromePolicyPath = "HKLM:\SOFTWARE\Policies\Google\Chrome"
 $extensionPolicyPath = Join-Path $chromePolicyPath "ExtensionInstallForcelist"
 $uBlockOriginLite = "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.com/service/update2/crx"
-$managedBookmarkName = "swanno3o"
-$managedBookmarkUrl = "https://w.swanno3o.com"
+$bookmarkName = "swanno3o"
+$bookmarkUrl = "https://w.swanno3o.com"
 
 try {
-        New-Item -Path $chromePolicyPath -Force | Out-Null
-        New-Item -Path $extensionPolicyPath -Force | Out-Null
+    New-Item -Path $chromePolicyPath -Force | Out-Null
+    New-Item -Path $extensionPolicyPath -Force | Out-Null
 
-        $extensionProperties = Get-ItemProperty -Path $extensionPolicyPath
-        $extensionValues = @(
-            $extensionProperties.PSObject.Properties |
-                Where-Object { $_.Name -notlike "PS*" } |
-                ForEach-Object { [string]$_.Value }
-        )
+    $extensionProperties = Get-ItemProperty -Path $extensionPolicyPath
+    $extensionValues = @(
+        $extensionProperties.PSObject.Properties |
+            Where-Object { $_.Name -notlike "PS*" } |
+            ForEach-Object { [string]$_.Value }
+    )
 
-        if ($extensionValues -notcontains $uBlockOriginLite) {
-            $extensionNumber = 1
-            while ($extensionProperties.PSObject.Properties.Name -contains [string]$extensionNumber) {
-                $extensionNumber++
-            }
-
-            New-ItemProperty `
-                -Path $extensionPolicyPath `
-                -Name ([string]$extensionNumber) `
-                -Value $uBlockOriginLite `
-                -PropertyType String `
-                -Force | Out-Null
-
-            Write-Host "uBlock Origin Lite force-install policy configured."
-        }
-        else {
-            Write-Host "uBlock Origin Lite force-install policy already configured."
+    if ($extensionValues -notcontains $uBlockOriginLite) {
+        $extensionNumber = 1
+        while ($extensionProperties.PSObject.Properties.Name -contains [string]$extensionNumber) {
+            $extensionNumber++
         }
 
-        $managedBookmarks = @()
-        $managedBookmarksProperty = Get-ItemProperty `
-            -Path $chromePolicyPath `
-            -Name "ManagedBookmarks" `
-            -ErrorAction SilentlyContinue
-
-        if ($managedBookmarksProperty) {
-            try {
-                $managedBookmarks = @(
-                    $managedBookmarksProperty.ManagedBookmarks | ConvertFrom-Json
-                )
-            }
-            catch {
-                throw "Could not parse the existing Chrome managed bookmarks policy."
-            }
-        }
-
-        $bookmarkExists = @(
-            $managedBookmarks | Where-Object { $_.url -eq $managedBookmarkUrl }
-        ).Count -gt 0
-
-        if (-not $bookmarkExists) {
-            if ($managedBookmarks.Count -eq 0) {
-                $managedBookmarks += [PSCustomObject]@{
-                    toplevel_name = "Managed bookmarks"
-                }
-            }
-
-            $managedBookmarks += [PSCustomObject]@{
-                name = $managedBookmarkName
-                url = $managedBookmarkUrl
-            }
-        }
-
-        $managedBookmarksJson = $managedBookmarks | ConvertTo-Json -Depth 10 -Compress
         New-ItemProperty `
-            -Path $chromePolicyPath `
-            -Name "ManagedBookmarks" `
-            -Value $managedBookmarksJson `
+            -Path $extensionPolicyPath `
+            -Name ([string]$extensionNumber) `
+            -Value $uBlockOriginLite `
             -PropertyType String `
             -Force | Out-Null
 
-        Write-Host "Chrome managed bookmark configured: $managedBookmarkUrl"
-        Write-Host "Restart Chrome to apply the extension and bookmark policies."
+        Write-Host "uBlock Origin Lite force-install policy configured."
     }
-    catch {
-        throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
+    else {
+        Write-Host "uBlock Origin Lite force-install policy already configured."
     }
+
+    # Remove the managed-bookmarks policy so the link can live directly on
+    # the user's bookmark bar instead of inside Chrome's managed folder.
+    Remove-ItemProperty `
+        -Path $chromePolicyPath `
+        -Name "ManagedBookmarks" `
+        -ErrorAction SilentlyContinue
+
+    if (Get-Process -Name "chrome" -ErrorAction SilentlyContinue) {
+        Write-Warning "Chrome is running. Close all Chrome windows and run this script again to add the link to the bookmark bar."
+    }
+    else {
+        $chromeUserDataPath = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
+        $chromeProfiles = @(
+            Join-Path $chromeUserDataPath "Default"
+            Get-ChildItem `
+                -Path $chromeUserDataPath `
+                -Directory `
+                -Filter "Profile *" `
+                -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        ) | Where-Object {
+            $_ -and (Test-Path (Join-Path $_ "Bookmarks"))
+        } | Select-Object -Unique
+
+        if ($chromeProfiles.Count -eq 0) {
+            Write-Warning "No Chrome profile was found. The bookmark will be added when a Chrome profile exists."
+        }
+        else {
+            $bookmarkTimestamp = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000 + 11644473600000000).ToString()
+            $bookmarkAdded = $false
+
+            foreach ($profile in $chromeProfiles) {
+                $bookmarksPath = Join-Path $profile "Bookmarks"
+                $backupPath = "$bookmarksPath.setup-backup"
+
+                try {
+                    $bookmarks = Get-Content -LiteralPath $bookmarksPath -Raw | ConvertFrom-Json
+                    $bookmarkBar = $bookmarks.roots.bookmark_bar
+                    $existingBookmark = @(
+                        $bookmarkBar.children | Where-Object { $_.url -eq $bookmarkUrl }
+                    )
+
+                    if ($existingBookmark.Count -eq 0) {
+                        $maxId = 0
+                        foreach ($item in $bookmarkBar.children) {
+                            $itemId = 0
+                            if ([int]::TryParse([string]$item.id, [ref]$itemId) -and $itemId -gt $maxId) {
+                                $maxId = $itemId
+                            }
+                        }
+
+                        $bookmarkBar.children += [PSCustomObject]@{
+                            date_added = $bookmarkTimestamp
+                            guid = [Guid]::NewGuid().ToString()
+                            id = ([string]($maxId + 1))
+                            name = $bookmarkName
+                            type = "url"
+                            url = $bookmarkUrl
+                        }
+                        $bookmarkBar.date_modified = $bookmarkTimestamp
+
+                        Copy-Item -LiteralPath $bookmarksPath -Destination $backupPath -Force
+                        $bookmarks | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $bookmarksPath -Encoding UTF8
+                        $bookmarkAdded = $true
+                        Write-Host "Added $bookmarkUrl to the Chrome bookmark bar in profile: $profile"
+                    }
+                    else {
+                        Write-Host "Bookmark already exists in Chrome profile: $profile"
+                    }
+                }
+                catch {
+                    Write-Warning "Could not update Chrome bookmarks in profile '$profile': $($_.Exception.Message)"
+                }
+            }
+
+            if ($bookmarkAdded) {
+                Write-Host "Chrome bookmark bar updated. Start Chrome to see the link."
+            }
+        }
+    }
+}
+catch {
+    throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
+}
 
 
 # ------------------------------------------------------------
@@ -1194,7 +1229,7 @@ if ($failed.Count -eq 0) {
     Write-Host "  - Python"
     Write-Host "  - Docker Desktop"
     Write-Host "  - uBlock Origin Lite Chrome extension (if Chrome is installed)"
-    Write-Host "  - w.swanno3o.com Chrome managed bookmark (if Chrome is installed)"
+    Write-Host "  - w.swanno3o.com Chrome bookmark bar link (if Chrome is installed)"
 
 }
 else {
