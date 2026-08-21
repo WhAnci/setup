@@ -487,6 +487,43 @@ else {
 Write-Host "Setup repository is ready:"
 Write-Host $setupRepo
 
+# ------------------------------------------------------------
+# WSC 2026 repository
+# ------------------------------------------------------------
+
+Write-Step "Cloning WSC 2026 repository to the Desktop"
+
+$wscRepo = Join-Path $desktopPath "wsc2026"
+$wscRemote = "https://github.com/onlycryintherain/wsc2026.git"
+
+if (Test-Path (Join-Path $wscRepo ".git")) {
+    Write-Host "Existing WSC 2026 repository found:"
+    Write-Host $wscRepo
+
+    & git -C $wscRepo remote set-url origin $wscRemote
+    & git -C $wscRepo pull --ff-only
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git pull failed for $wscRepo. Check for local changes or conflicts."
+    }
+}
+elseif (Test-Path $wscRepo) {
+    throw "The wsc2026 directory exists but is not a Git repository: $wscRepo"
+}
+else {
+    Write-Host "Cloning WSC 2026 repository to the Desktop:"
+    Write-Host $wscRepo
+
+    & git clone $wscRemote $wscRepo
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git clone failed for $wscRemote"
+    }
+}
+
+Write-Host "WSC 2026 repository is ready:"
+Write-Host $wscRepo
+
 # Repeat the unblock step after clone/pull so newly downloaded workspace files
 # are also runnable immediately.
 $workspaceRoots = @(
