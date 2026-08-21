@@ -51,6 +51,83 @@ function Test-Command {
 }
 
 
+$chromeWasRunning = $false
+$chromeExecutable = $null
+
+function Stop-ChromeForSetup {
+    $chromeProcesses = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
+
+    if ($chromeProcesses.Count -eq 0) {
+        return
+    }
+
+    $script:chromeWasRunning = $true
+
+    foreach ($process in $chromeProcesses) {
+        if (-not $script:chromeExecutable) {
+            try {
+                $script:chromeExecutable = $process.Path
+            }
+            catch {
+                # The executable path may be unavailable without process access.
+            }
+        }
+    }
+
+    Write-Host "Chrome is running. Closing Chrome before updating its profile."
+    $chromeProcesses | Stop-Process -Force
+
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        if (-not (Get-Process -Name "chrome" -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw "Could not close Chrome before updating its profile."
+}
+
+
+function Start-ChromeAfterSetup {
+    if (-not $script:chromeWasRunning) {
+        return
+    }
+
+    $chromeCandidates = @(
+        $script:chromeExecutable
+        (Join-Path ${env:ProgramFiles} "Google\Chrome\Application\chrome.exe")
+        (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
+        (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
+    ) | Where-Object {
+        $_ -and (Test-Path $_)
+    } | Select-Object -Unique
+
+    try {
+        if ($chromeCandidates.Count -gt 0) {
+            Start-Process -FilePath $chromeCandidates[0]
+        }
+        elseif (Test-Command "chrome") {
+            Start-Process -FilePath "chrome.exe"
+        }
+        else {
+            Write-Warning "Chrome was running before setup but its executable could not be found. Start Chrome manually."
+            return
+        }
+
+        Write-Host "Chrome restarted."
+    }
+    catch {
+        Write-Warning "Chrome was closed but could not be restarted: $($_.Exception.Message)"
+    }
+}
+
+
+trap {
+    Start-ChromeAfterSetup
+    throw $_
+}
+
+
 function Refresh-Path {
     $machinePath = [Environment]::GetEnvironmentVariable(
         "Path",
@@ -122,6 +199,8 @@ if (-not $isAdmin) {
 }
 
 Write-Host "Administrator privileges confirmed."
+
+Stop-ChromeForSetup
 
 
 # ------------------------------------------------------------
@@ -501,12 +580,8 @@ try {
         -Name "ManagedBookmarks" `
         -ErrorAction SilentlyContinue
 
-    if (Get-Process -Name "chrome" -ErrorAction SilentlyContinue) {
-        Write-Warning "Chrome is running. Close all Chrome windows and run this script again to add the link to the bookmark bar."
-    }
-    else {
-        $chromeUserDataPath = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
-        $chromeProfiles = @(
+    $chromeUserDataPath = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
+    $chromeProfiles = @(
             Join-Path $chromeUserDataPath "Default"
             Get-ChildItem `
                 -Path $chromeUserDataPath `
@@ -572,7 +647,6 @@ try {
                 Write-Host "Chrome bookmark bar updated. Start Chrome to see the link."
             }
         }
-    }
 }
 catch {
     throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
@@ -1240,7 +1314,10 @@ else {
         Write-Warning "  - $item"
     }
 
+    Write-Warning "One or more tools failed verification."
+
     throw "One or more tools failed verification."
 }
 
 Write-Host "============================================================"
+Start-ChromeAfterSetup
