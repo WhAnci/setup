@@ -102,6 +102,54 @@ function Get-ChromeExecutable {
 }
 
 
+function Get-ChromeExecutable {
+    $candidates = @(
+        $script:chromeExecutable
+        (Join-Path ${env:ProgramFiles} "Google\Chrome\Application\chrome.exe")
+        (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
+        (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
+        (Join-Path $env:LOCALAPPDATA "Google\Chrome SxS\Application\chrome.exe")
+    )
+
+    $appPathKeys = @(
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+    )
+
+    foreach ($key in $appPathKeys) {
+        try {
+            $registeredPath = (Get-ItemProperty -Path $key -ErrorAction Stop).'(default)'
+            if ($registeredPath) {
+                $candidates += [string]$registeredPath
+            }
+        }
+        catch {
+            # The registry key is optional.
+        }
+    }
+
+    $command = Get-Command "chrome.exe" -ErrorAction SilentlyContinue
+    if ($command -and $command.Source) {
+        $candidates += $command.Source
+    }
+
+    foreach ($candidate in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+        try {
+            $resolvedPath = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+            if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+                return $resolvedPath
+            }
+        }
+        catch {
+            # Try the next candidate.
+        }
+    }
+
+    return $null
+}
+
+
 function Stop-ChromeForSetup {
     $chromeProcesses = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
 
@@ -110,12 +158,34 @@ function Stop-ChromeForSetup {
     }
 
     $script:chromeWasRunning = $true
-    $script:chromeExecutable = Get-ChromeExecutable
 
-    foreach ($process in $chromeProcesses) {
-        if (-not $script:chromeExecutable) {
+    # Get-Process.Path can be unavailable for elevated processes. Query the
+    # executable path before stopping Chrome so it can be restarted later.
+    try {
+        $processPaths = @(
+            Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" -ErrorAction Stop |
+                Select-Object -ExpandProperty ExecutablePath
+        )
+
+        if ($processPaths.Count -gt 0) {
+            $script:chromeExecutable = $processPaths[0]
+        }
+    }
+    catch {
+        # Fall back to the standard paths and registry below.
+    }
+
+    if (-not $script:chromeExecutable) {
+        $script:chromeExecutable = Get-ChromeExecutable
+    }
+
+    if (-not $script:chromeExecutable) {
+        foreach ($process in $chromeProcesses) {
             try {
                 $script:chromeExecutable = $process.Path
+                if ($script:chromeExecutable) {
+                    break
+                }
             }
             catch {
                 # The executable path may be unavailable without process access.
@@ -150,8 +220,18 @@ function Start-ChromeAfterSetup {
             return
         }
 
-        Start-Process -FilePath $chromePath
-        Write-Host "Chrome restarted: $chromePath"
+        Start-Process `
+            -FilePath $chromePath `
+            -WorkingDirectory (Split-Path $chromePath -Parent)
+
+        Start-Sleep -Milliseconds 750
+
+        if (Get-Process -Name "chrome" -ErrorAction SilentlyContinue) {
+            Write-Host "Chrome restarted: $chromePath"
+        }
+        else {
+            Write-Warning "Chrome launch did not create a running process: $chromePath"
+        }
     }
     catch {
         Write-Warning "Chrome was closed but could not be restarted: $($_.Exception.Message)"
@@ -246,31 +326,14 @@ Stop-ChromeForSetup
 
 Write-Step "Configuring PowerShell script execution"
 
-# Allow this setup process to run local scripts and persist a reasonable
-# per-user policy for future contest workspace scripts.
-try {
-    Set-ExecutionPolicy `
-        -Scope Process `
-        -ExecutionPolicy Bypass `
-        -Force `
-        -ErrorAction Stop
+# The script is executed through irm | iex, so no persistent execution-policy
+# change is necessary. Machine policies may reject Set-ExecutionPolicy anyway.
+Write-Host "Using the current PowerShell execution policy for this setup run."
 
-    Set-ExecutionPolicy `
-        -Scope CurrentUser `
-        -ExecutionPolicy RemoteSigned `
-        -Force `
-        -ErrorAction Stop
-
-    Write-Host "PowerShell execution policy configured."
-}
-catch {
-    Write-Warning "Could not change the PowerShell execution policy: $($_.Exception.Message)"
-}
 
 # Files downloaded from the Internet can carry a Zone.Identifier alternate
 # data stream. Remove that mark from trusted local contest workspaces so
 # scripts such as tools\check.ps1 can run normally.
-$setupRepoPath = Join-Path (Join-Path $env:USERPROFILE "Desktop") "setup"
 $scriptRoots = @(
     $PSScriptRoot
     (Join-Path $env:USERPROFILE "Documents\Github")
@@ -288,10 +351,7 @@ foreach ($root in $scriptRoots) {
         -Filter "*.ps1" `
         -File `
         -Recurse `
-        -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.FullName -notlike "$setupRepoPath\*"
-        }
+        -ErrorAction SilentlyContinue
 
     foreach ($script in $scripts) {
         try {
@@ -443,10 +503,8 @@ if (Test-Command "choco") {
 }
 else {
 
-    Set-ExecutionPolicy `
-        Bypass `
-        -Scope Process `
-        -Force
+    # Chocolatey bootstrap installers run in the current process. Do not
+    # change the machine or user execution policy; irm | iex already runs.
 
 
     # --------------------------------------------------------
@@ -728,18 +786,16 @@ catch {
 
 
 # ------------------------------------------------------------
-# GitHub setup repository
+# WSC 2026 repository
 # ------------------------------------------------------------
 
-Write-Step "Syncing GitHub setup repository"
+Write-Step "Cloning WSC 2026 repository to the Desktop"
 
 if (-not (Test-Command "git")) {
     throw "Git was not found after installation."
 }
 
 $desktopPath = [Environment]::GetFolderPath("Desktop")
-$setupRepo = Join-Path $desktopPath "setup"
-$setupRemote = "https://github.com/WhAnci/setup.git"
 
 if (-not $desktopPath) {
     throw "Could not determine the current user's Desktop path."
@@ -749,48 +805,6 @@ New-Item `
     -ItemType Directory `
     -Path $desktopPath `
     -Force | Out-Null
-
-if (Test-Path (Join-Path $setupRepo ".git")) {
-    Write-Host "Existing setup repository found:"
-    Write-Host $setupRepo
-
-    & git -C $setupRepo remote set-url origin $setupRemote
-
-    $setupChanges = & git -C $setupRepo status --porcelain
-
-    if ($setupChanges) {
-        Write-Warning "Local changes found in $setupRepo. Skipping Git pull to avoid overwriting them."
-    }
-    else {
-        & git -C $setupRepo pull --ff-only origin main
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "Git pull failed for $setupRepo. Check the network connection or repository state."
-        }
-    }
-}
-elseif (Test-Path $setupRepo) {
-    throw "The setup directory exists but is not a Git repository: $setupRepo"
-}
-else {
-    Write-Host "Cloning setup repository to the Desktop:"
-    Write-Host $setupRepo
-
-    & git clone --branch main $setupRemote $setupRepo
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Git clone failed for $setupRemote"
-    }
-}
-
-Write-Host "Setup repository is ready:"
-Write-Host $setupRepo
-
-# ------------------------------------------------------------
-# WSC 2026 repository
-# ------------------------------------------------------------
-
-Write-Step "Cloning WSC 2026 repository to the Desktop"
 
 $wscRepo = Join-Path $desktopPath "wsc2026"
 $wscRemote = "https://github.com/onlycryintherain/wsc2026.git"
@@ -840,11 +854,7 @@ foreach ($root in $workspaceRoots) {
         -Filter "*.ps1" `
         -File `
         -Recurse `
-        -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.FullName -notlike "$setupRepoPath\*"
-        } |
-        ForEach-Object {
+        -ErrorAction SilentlyContinue | ForEach-Object {
             try {
                 Unblock-File `
                     -LiteralPath $_.FullName `
