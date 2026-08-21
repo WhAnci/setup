@@ -597,6 +597,9 @@ else {
 Write-Step "Installing Git, kubectl, k9s, k6, Terraform, jq, VS Code, Python, and Docker Desktop"
 
 $rebootRequired = $false
+$dockerDeferred = $false
+
+Write-Host "Installing core development tools..."
 
 & choco install `
     git `
@@ -607,20 +610,40 @@ $rebootRequired = $false
     jq `
     vscode `
     python `
-    docker-desktop `
     -y `
     --no-progress
 
-$chocoExitCode = $LASTEXITCODE
+$coreChocoExitCode = $LASTEXITCODE
 
 # Chocolatey uses 3010 to mean that installation succeeded but Windows
-# must be rebooted before all changes take effect. It is not a failure.
-if ($chocoExitCode -eq 3010) {
+# must be rebooted before all changes take effect. Install Docker separately
+# after the reboot because its MSI commonly fails with 1603 during a pending
+# reboot.
+if ($coreChocoExitCode -eq 3010) {
     $rebootRequired = $true
-    Write-Warning "Chocolatey installed the packages successfully, but a reboot is required. Continuing setup."
+    $dockerDeferred = $true
+    Write-Warning "Core tools installed, but a reboot is required. Docker Desktop installation is deferred until the next setup run."
 }
-elseif ($chocoExitCode -ne 0) {
-    throw "Chocolatey package installation failed. Exit code: $chocoExitCode"
+elseif ($coreChocoExitCode -ne 0) {
+    throw "Chocolatey package installation failed for core tools. Exit code: $coreChocoExitCode"
+}
+else {
+    Write-Host "Installing Docker Desktop..."
+
+    & choco install `
+        docker-desktop `
+        -y `
+        --no-progress
+
+    $dockerChocoExitCode = $LASTEXITCODE
+
+    if ($dockerChocoExitCode -eq 3010) {
+        $rebootRequired = $true
+        Write-Warning "Docker Desktop installed, but a reboot is required."
+    }
+    elseif ($dockerChocoExitCode -ne 0) {
+        throw "Chocolatey package installation failed for Docker Desktop. Exit code: $dockerChocoExitCode"
+    }
 }
 
 Refresh-Path
@@ -1352,10 +1375,16 @@ if (Test-Command "docker") {
     }
 
 }
+elseif ($dockerDeferred) {
+
+    Write-Warning "Docker verification deferred until after the required reboot."
+
+}
 else {
 
     Write-Warning "Docker not found."
     $failed += "docker"
+
 }
 
 
@@ -1385,7 +1414,12 @@ if ($failed.Count -eq 0) {
     Write-Host "  - jq"
     Write-Host "  - Visual Studio Code"
     Write-Host "  - Python"
-    Write-Host "  - Docker Desktop"
+    if (-not $dockerDeferred) {
+        Write-Host "  - Docker Desktop"
+    }
+    else {
+        Write-Host "  - Docker Desktop (deferred until reboot)"
+    }
     Write-Host "  - uBlock Origin Lite Chrome extension (if Chrome is installed)"
     Write-Host "  - w.swanno3o.com Chrome bookmark bar link (if Chrome is installed)"
 
