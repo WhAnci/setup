@@ -16,6 +16,9 @@ $ProgressPreference = "SilentlyContinue"
 #   - Visual Studio Code
 #   - Python
 #   - Docker Desktop
+#   - Google Chrome
+#   - uBlock Origin Lite Chrome extension
+#   - w.swanno3o.com Chrome managed bookmark
 #
 # Run as Administrator:
 #   irm https://setup.swanno3o.com/wsc2026/setup.ps1 | iex
@@ -428,6 +431,7 @@ $rebootRequired = $false
     vscode `
     python `
     docker-desktop `
+    googlechrome `
     -y `
     --no-progress
 
@@ -444,6 +448,98 @@ elseif ($chocoExitCode -ne 0) {
 }
 
 Refresh-Path
+
+
+# ------------------------------------------------------------
+# Chrome extension and managed bookmark
+# ------------------------------------------------------------
+
+Write-Step "Configuring Chrome extension and managed bookmark"
+
+$chromePolicyPath = "HKLM:\SOFTWARE\Policies\Google\Chrome"
+$extensionPolicyPath = Join-Path $chromePolicyPath "ExtensionInstallForcelist"
+$uBlockOriginLite = "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.com/service/update2/crx"
+$managedBookmarkName = "swanno3o"
+$managedBookmarkUrl = "https://w.swanno3o.com"
+
+try {
+    New-Item -Path $chromePolicyPath -Force | Out-Null
+    New-Item -Path $extensionPolicyPath -Force | Out-Null
+
+    $extensionProperties = Get-ItemProperty -Path $extensionPolicyPath
+    $extensionValues = @(
+        $extensionProperties.PSObject.Properties |
+            Where-Object { $_.Name -notlike "PS*" } |
+            ForEach-Object { [string]$_.Value }
+    )
+
+    if ($extensionValues -notcontains $uBlockOriginLite) {
+        $extensionNumber = 1
+        while ($extensionProperties.PSObject.Properties.Name -contains [string]$extensionNumber) {
+            $extensionNumber++
+        }
+
+        New-ItemProperty `
+            -Path $extensionPolicyPath `
+            -Name ([string]$extensionNumber) `
+            -Value $uBlockOriginLite `
+            -PropertyType String `
+            -Force | Out-Null
+
+        Write-Host "uBlock Origin Lite force-install policy configured."
+    }
+    else {
+        Write-Host "uBlock Origin Lite force-install policy already configured."
+    }
+
+    $managedBookmarks = @()
+    $managedBookmarksProperty = Get-ItemProperty `
+        -Path $chromePolicyPath `
+        -Name "ManagedBookmarks" `
+        -ErrorAction SilentlyContinue
+
+    if ($managedBookmarksProperty) {
+        try {
+            $managedBookmarks = @(
+                $managedBookmarksProperty.ManagedBookmarks | ConvertFrom-Json
+            )
+        }
+        catch {
+            throw "Could not parse the existing Chrome managed bookmarks policy."
+        }
+    }
+
+    $bookmarkExists = @(
+        $managedBookmarks | Where-Object { $_.url -eq $managedBookmarkUrl }
+    ).Count -gt 0
+
+    if (-not $bookmarkExists) {
+        if ($managedBookmarks.Count -eq 0) {
+            $managedBookmarks += [PSCustomObject]@{
+                toplevel_name = "Managed bookmarks"
+            }
+        }
+
+        $managedBookmarks += [PSCustomObject]@{
+            name = $managedBookmarkName
+            url = $managedBookmarkUrl
+        }
+    }
+
+    $managedBookmarksJson = $managedBookmarks | ConvertTo-Json -Depth 10 -Compress
+    New-ItemProperty `
+        -Path $chromePolicyPath `
+        -Name "ManagedBookmarks" `
+        -Value $managedBookmarksJson `
+        -PropertyType String `
+        -Force | Out-Null
+
+    Write-Host "Chrome managed bookmark configured: $managedBookmarkUrl"
+    Write-Host "Restart Chrome to apply the extension and bookmark policies."
+}
+catch {
+    throw "Chrome extension/bookmark configuration failed: $($_.Exception.Message)"
+}
 
 
 # ------------------------------------------------------------
@@ -1083,6 +1179,9 @@ if ($failed.Count -eq 0) {
     Write-Host "  - Visual Studio Code"
     Write-Host "  - Python"
     Write-Host "  - Docker Desktop"
+    Write-Host "  - Google Chrome"
+    Write-Host "  - uBlock Origin Lite Chrome extension"
+    Write-Host "  - w.swanno3o.com Chrome managed bookmark"
 
 }
 else {
