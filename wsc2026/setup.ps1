@@ -13,8 +13,7 @@ $ProgressPreference = "SilentlyContinue"
 #   - Terraform
 #   - AWS CLI v2
 #   - jq
-#   - Visual Studio Code
-#   - Python
+#   - VS Code Remote - SSH extension
 #   - Docker Desktop
 #   - uBlock Origin Lite Chrome extension
 #   - w.swanno3o.com Chrome bookmark bar link
@@ -635,10 +634,10 @@ else {
 
 
 # ------------------------------------------------------------
-# Git / kubectl / k9s / k6 / Terraform / jq / VS Code / Python / Docker
+# Git / kubectl / k9s / k6 / Terraform / jq / Docker
 # ------------------------------------------------------------
 
-Write-Step "Installing Git, kubectl, k9s, k6, Terraform, jq, VS Code, Python, and Docker Desktop"
+Write-Step "Installing Git, kubectl, k9s, k6, Terraform, jq, and Docker Desktop"
 
 $rebootRequired = $false
 $dockerDeferred = $false
@@ -652,8 +651,6 @@ Write-Host "Installing core development tools..."
     k6 `
     terraform `
     jq `
-    vscode `
-    python `
     -y `
     --no-progress
 
@@ -973,12 +970,9 @@ if ($postSyncFailures.Count -gt 0) {
 
 
 if (Test-Command "code") {
-    Write-Step "Installing selected VS Code extensions"
+    Write-Step "Installing VS Code Remote - SSH extension"
 
     $vscodeExtensions = @(
-        "teabyii.ayu"
-        "PKief.material-icon-theme"
-        "DavidAnson.vscode-markdownlint"
         "ms-vscode-remote.remote-ssh"
     )
 
@@ -999,44 +993,6 @@ if (Test-Command "code") {
         $extensionFailures | ForEach-Object {
             Write-Warning "  code --install-extension $_"
         }
-    }
-
-    # Preserve existing VS Code settings and update only the requested themes.
-    $vscodeSettingsPath = Join-Path $env:APPDATA "Code\User\settings.json"
-    $vscodeSettingsDir = Split-Path $vscodeSettingsPath -Parent
-
-    try {
-        New-Item -ItemType Directory -Path $vscodeSettingsDir -Force | Out-Null
-
-        if (Test-Path $vscodeSettingsPath) {
-            $settingsText = Get-Content -LiteralPath $vscodeSettingsPath -Raw
-            $vscodeSettings = $settingsText | ConvertFrom-Json
-        }
-        else {
-            $vscodeSettings = [PSCustomObject]@{}
-        }
-
-        $vscodeSettings | Add-Member `
-            -MemberType NoteProperty `
-            -Name "workbench.colorTheme" `
-            -Value "Ayu Light" `
-            -Force
-
-        $vscodeSettings | Add-Member `
-            -MemberType NoteProperty `
-            -Name "workbench.iconTheme" `
-            -Value "material-icon-theme" `
-            -Force
-
-        $vscodeSettings | ConvertTo-Json -Depth 20 | Set-Content `
-            -LiteralPath $vscodeSettingsPath `
-            -Encoding UTF8
-
-        Write-Host "VS Code theme configured: Ayu Light"
-        Write-Host "VS Code icon theme configured: Material Icon Theme"
-    }
-    catch {
-        Write-Warning "Could not update VS Code settings: $($_.Exception.Message)"
     }
 }
 else {
@@ -1484,8 +1440,7 @@ if ($failed.Count -eq 0) {
     Write-Host "  - Terraform"
     Write-Host "  - AWS CLI v2"
     Write-Host "  - jq"
-    Write-Host "  - Visual Studio Code"
-    Write-Host "  - Python"
+    Write-Host "  - VS Code Remote - SSH extension"
     if (-not $dockerDeferred) {
         Write-Host "  - Docker Desktop"
     }
